@@ -1,0 +1,28 @@
+[package]
+name = "rustmodding"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "vcruntime140_1"
+
+[build-dependencies]
+goblin = { version = "0.10.7" }
+
+[dependencies]
+chrono = "0.4.45"
+log = { version = "0.4.34", features = ["alloc"] }
+
+[dependencies.windows-sys]
+version = "0.61.2"
+features = [
+    "Win32_Foundation",             # HMODULE, BOOL, FALSE, TRUE
+    "Win32_System_LibraryLoader",   # LoadLibraryA, GetProcAddress, GetModuleFileNameW
+    "Win32_System_SystemServices",  # DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH
+    "Win32_System_Threading",       # CreateThread
+    "Win32_Security",               # SECURITY_ATTRIBUTES -- required by CreateThread
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Memory",
+    "Win32_UI_Input_KeyboardAndMouse"
+]
