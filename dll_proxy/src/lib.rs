@@ -110,8 +110,10 @@ fn get_dll(name: &str) -> Result<File, std::io::Error> {
     if cfg!(target_os = "windows") {
         File::open(format!(r"C:\Windows\System32\{name}"))
     } else if cfg!(target_os = "linux") {
-        let home = env!("HOME");
-        let wineprefix = std::env::var("WINEPREFIX").unwrap_or(format!("{home}/.wine"));
+        let default_wineprefix = std::env::var("HOME")
+            .map(|home| format!("{home}/.wine"))
+            .unwrap_or_else(|_| String::from(".wine"));
+        let wineprefix = std::env::var("WINEPREFIX").unwrap_or(default_wineprefix);
         let dll_path = format!("{wineprefix}/drive_c/windows/system32/{name}");
         File::open(dll_path)
     } else {
