@@ -2,14 +2,15 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     mem,
-    ptr::null,
+    panic::PanicHookInfo,
+    ptr::{null, null_mut},
     sync::{
         LazyLock, Mutex,
         atomic::{AtomicIsize, Ordering},
     },
 };
 
-use log::Level;
+use log::{Level, error};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     System::{
@@ -25,6 +26,17 @@ use windows_sys::Win32::{
         },
     },
 };
+
+fn panic_handler<'a, 'b>(info: &'a PanicHookInfo<'b>) -> () {
+    unsafe {
+        MessageBoxA(
+            null_mut(),
+            info.payload_as_str().unwrap_or_default().as_ptr(),
+            "MOD LOADER PANIC".as_ptr(),
+            MB_OK,
+        )
+    };
+}
 
 struct FileLogger {
     file: Mutex<File>,
@@ -73,6 +85,8 @@ mod modloader {
         },
         UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId},
     };
+
+    use crate::panic_handler;
 
     unsafe extern "C" {
         unsafe static mut REAL_CXX_FRAME_HANDLER: usize;
@@ -139,6 +153,7 @@ mod modloader {
             DLL_PROCESS_ATTACH => {
                 unsafe {
                     super::apply_patches(InitPhaseOnly(()));
+                    std::panic::set_hook(Box::new(panic_handler));
                     windows_sys::Win32::System::Threading::CreateThread(
                         null_mut(),
                         0,
@@ -203,11 +218,45 @@ fn apply_patches(lock: modloader::InitPhaseOnly) {
     unsafe {
         Patch::<f64> {
             addr: 0x30ce38,
-            value: 30.0,
+            value: 60.0, // NO-OP
         }
-        .apply(lock)
+        .apply(&lock)
         .expect("Failed to patch FPS");
     };
+    #[repr(transparent)]
+    struct BgmFileName([u8; 22]);
+    impl TryFrom<&str> for BgmFileName {
+        type Error = ();
+
+        fn try_from(value: &str) -> Result<Self, Self::Error> {
+            let value = value.as_bytes();
+            let mut arr = [0; _];
+            if arr.len() < (value.len() + 1) {
+                return Err(());
+            }
+            let len = core::cmp::min(arr.len(), value.len());
+            arr[..len].copy_from_slice(&value[..len]);
+            arr[len] = 0;
+            Ok(Self(arr))
+        }
+    }
+    unsafe {
+        Patch::<BgmFileName> {
+            addr: 0x30b5e8,
+            value: BgmFileName::try_from("data/bgm/th06_15.opus")
+                .inspect_err(|()| {
+                    MessageBoxA(
+                        null_mut(),
+                        "BGM file name too long\0".as_ptr(),
+                        "".as_ptr(),
+                        0,
+                    );
+                })
+                .expect("BGM file name too long"),
+        }
+        .apply(&lock)
+        .expect("Failed to patch Title Screen BGM");
+    }
 }
 
 fn main(window: HWND) -> ! {
@@ -276,7 +325,7 @@ enum PatchError {
 }
 
 impl<T: Sized> Patch<T> {
-    unsafe fn apply(self, _lock: modloader::InitPhaseOnly) -> Result<T, PatchError> {
+    unsafe fn apply(self, _lock: &modloader::InitPhaseOnly) -> Result<T, PatchError> {
         let main = unsafe { GetModuleHandleA(null()) };
         if main.is_null() {
             return Err(PatchError::GetModuleHandle);
