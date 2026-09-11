@@ -1,3 +1,7 @@
 {
-    "rust-analyzer.cargo.target": "x86_64-pc-windows-gnu"
+    "rust-analyzer.cargo.target": "x86_64-pc-windows-gnu",
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml",
+        "dll_proxy/Cargo.toml"
+    ]
 }

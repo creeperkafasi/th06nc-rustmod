@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString, c_char},
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::Write,
     mem,
     os::raw::c_void,
     panic::PanicHookInfo,
@@ -15,9 +15,8 @@ use std::{
     },
 };
 
-use log::{Level, error};
-use once_cell::sync::Lazy;
-use retour::{GenericDetour, RawDetour};
+use log::Level;
+use retour::RawDetour;
 use serde::Deserialize;
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
@@ -84,6 +83,7 @@ static LOGGER: LazyLock<FileLogger> = LazyLock::new(|| FileLogger {
 mod modloader {
     use std::{arch::global_asm, ffi::CString, os::raw::c_void, ptr::null_mut};
 
+    use dll_proxy::dll_proxy;
     use windows_sys::Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM},
         System::{
@@ -96,59 +96,7 @@ mod modloader {
 
     use crate::panic_handler;
 
-    unsafe extern "C" {
-        unsafe static mut REAL_CXX_FRAME_HANDLER: usize;
-        unsafe static mut REAL_NLG_DISPATCH: usize;
-        unsafe static mut REAL_NLG_RETURN: usize;
-    }
-
-    global_asm!(
-        ".data",
-        ".globl REAL_CXX_FRAME_HANDLER",
-        "REAL_CXX_FRAME_HANDLER: .quad 0",
-        ".globl REAL_NLG_DISPATCH",
-        "REAL_NLG_DISPATCH: .quad 0",
-        ".globl REAL_NLG_RETURN",
-        "REAL_NLG_RETURN: .quad 0",
-        ".text",
-        ".globl __CxxFrameHandler4",
-        "__CxxFrameHandler4:",
-        "    mov rax, [rip + REAL_CXX_FRAME_HANDLER]",
-        "    jmp rax",
-        ".globl __NLG_Dispatch2",
-        "__NLG_Dispatch2:",
-        "    mov rax, [rip + REAL_NLG_DISPATCH]",
-        "    jmp rax",
-        ".globl __NLG_Return2",
-        "__NLG_Return2:",
-        "    mov rax, [rip + REAL_NLG_RETURN]",
-        "    jmp rax",
-    );
-
-    fn fix_real_exports() {
-        let path = CString::new("C:\\Windows\\System32\\vcruntime140_1.dll").unwrap();
-        let real_dll = unsafe { LoadLibraryA(path.as_ptr() as *const u8) };
-
-        if real_dll != std::ptr::null_mut() {
-            unsafe {
-                REAL_CXX_FRAME_HANDLER = GetProcAddress(
-                    real_dll,
-                    CString::new("__CxxFrameHandler4").unwrap().as_ptr() as _,
-                )
-                .unwrap() as usize;
-                REAL_NLG_DISPATCH = GetProcAddress(
-                    real_dll,
-                    CString::new("__NLG_Dispatch2").unwrap().as_ptr() as _,
-                )
-                .unwrap() as usize;
-                REAL_NLG_RETURN = GetProcAddress(
-                    real_dll,
-                    CString::new("__NLG_Return2").unwrap().as_ptr() as _,
-                )
-                .unwrap() as usize;
-            }
-        }
-    }
+    dll_proxy!("vcruntime140_1.dll");
 
     pub struct InitPhaseOnly(());
 

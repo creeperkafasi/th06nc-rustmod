@@ -17,16 +17,17 @@ once_cell = "1.21.4"
 retour = { version = "0.3.1", features = ["static-detour"] }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.6"
+dll_proxy = { path = "dll_proxy" }
 
 [dependencies.windows-sys]
 version = "0.61.2"
 features = [
-    "Win32_Foundation",             # HMODULE, BOOL, FALSE, TRUE
-    "Win32_System_LibraryLoader",   # LoadLibraryA, GetProcAddress, GetModuleFileNameW
-    "Win32_System_SystemServices",  # DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH
-    "Win32_System_Threading",       # CreateThread
-    "Win32_Security",               # SECURITY_ATTRIBUTES -- required by CreateThread
+    "Win32_Foundation",                # HMODULE, BOOL, FALSE, TRUE
+    "Win32_System_LibraryLoader",      # LoadLibraryA, GetProcAddress, GetModuleFileNameW
+    "Win32_System_SystemServices",     # DLL_PROCESS_ATTACH, DLL_PROCESS_DETACH
+    "Win32_System_Threading",          # CreateThread
+    "Win32_Security",                  # SECURITY_ATTRIBUTES -- required by CreateThread
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Memory",
-    "Win32_UI_Input_KeyboardAndMouse"
+    "Win32_UI_Input_KeyboardAndMouse",
 ]

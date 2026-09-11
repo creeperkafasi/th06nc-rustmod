@@ -1,0 +1,13 @@
+[package]
+name = "dll_proxy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+goblin = "0.10.7"
+proc-macro2 = "1.0.107"
+quote = "1.0.47"
+unsynn = "0.3.0"
+
+[lib]
+proc-macro = true
