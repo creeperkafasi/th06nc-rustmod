@@ -1,0 +1,116 @@
+name: Build DLL
+
+# This crate is a cdylib that masquerades as vcruntime140_1.dll, which forces a
+# Windows host with the GNU target:
+#   * src/lib.rs uses `#![feature(once_cell_try_insert)]` -> nightly toolchain
+#   * the `dll_proxy!` proc macro opens C:\Windows\System32\vcruntime140_1.dll
+#     at compile time to read its export table -> needs a real Windows host
+#     (on Linux it reads the Wine prefix instead)
+#   * that macro emits GNU-syntax `global_asm!` (.data/.globl/.quad)
+#     -> x86_64-pc-windows-gnu, not an MSVC target
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Cargo profile to build
+        type: choice
+        options:
+          - release
+          - debug
+        default: release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TARGET: x86_64-pc-windows-gnu
+  DLL_NAME: vcruntime140_1.dll
+  # Rust nightly is required. Pin it (e.g. nightly-2026-07-07) to make builds
+  # reproducible instead of tracking whatever nightly ships that day.
+  RUST_TOOLCHAIN: nightly
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      # `debug` from the dispatch input maps onto cargo's `dev` profile; this
+      # value is both the `--profile` argument and the output directory name.
+      PROFILE: ${{ inputs.profile == 'debug' && 'dev' || 'release' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ env.TARGET }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET }}-${{ env.PROFILE }}
+
+      # Fail early with a readable message instead of a proc-macro panic.
+      - name: Check proxy source DLL
+        shell: pwsh
+        run: |
+          $dll = "$env:SystemRoot\System32\$env:DLL_NAME"
+          if (Test-Path $dll) {
+            Write-Host "Found $dll"
+            exit 0
+          }
+
+          # Fall back to the copy shipped by the VC++ redistributable in Visual Studio.
+          $redist = Get-ChildItem "$env:ProgramFiles\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT\$env:DLL_NAME" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $redist) {
+            throw "$dll is missing and no VC++ redist copy was found; dll_proxy! reads this file at compile time."
+          }
+
+          Copy-Item $redist.FullName $dll -Force
+          Write-Host "Copied $($redist.FullName) -> $dll"
+
+      - name: Build
+        # The image ships MinGW-w64 (gcc 14 + binutils) at C:\mingw64\bin, which
+        # is what the windows-gnu target links with.
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+        run: cargo build --locked --target $env:TARGET --profile $env:PROFILE
+
+      - name: Verify artifact
+        shell: pwsh
+        run: |
+          $dll = "target/$env:TARGET/$env:PROFILE/$env:DLL_NAME"
+          if (-not (Test-Path $dll)) { throw "Build produced no $dll" }
+
+          $item = Get-Item $dll
+          $hash = (Get-FileHash $dll -Algorithm SHA256).Hash
+          Write-Host "$dll -- $($item.Length) bytes -- sha256:$hash"
+
+          @(
+            "### $env:DLL_NAME"
+            ""
+            "Built for ``$env:TARGET`` with the ``$env:PROFILE`` profile."
+            ""
+            "| Size | SHA256 |"
+            "| --- | --- |"
+            "| $($item.Length) bytes | ``$hash`` |"
+          ) >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DLL_NAME }}-${{ env.PROFILE }}-${{ env.TARGET }}
+          path: target/${{ env.TARGET }}/${{ env.PROFILE }}/${{ env.DLL_NAME }}
+          if-no-files-found: error
