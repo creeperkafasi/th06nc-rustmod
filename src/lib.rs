@@ -1,16 +1,24 @@
+#![feature(once_cell_try_insert)]
+
 use std::{
-    fs::{File, OpenOptions},
-    io::Write,
+    collections::HashMap,
+    ffi::{CStr, CString, c_char},
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
     mem,
+    os::raw::c_void,
     panic::PanicHookInfo,
     ptr::{null, null_mut},
     sync::{
-        LazyLock, Mutex,
+        LazyLock, Mutex, OnceLock,
         atomic::{AtomicIsize, Ordering},
     },
 };
 
 use log::{Level, error};
+use once_cell::sync::Lazy;
+use retour::{GenericDetour, RawDetour};
+use serde::Deserialize;
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     System::{
@@ -152,6 +160,7 @@ mod modloader {
         match call_reason {
             DLL_PROCESS_ATTACH => {
                 unsafe {
+                    super::CONFIG.validate();
                     super::apply_patches(InitPhaseOnly(()));
                     std::panic::set_hook(Box::new(panic_handler));
                     windows_sys::Win32::System::Threading::CreateThread(
@@ -214,6 +223,61 @@ mod modloader {
     }
 }
 
+#[derive(Deserialize)]
+struct ModConfig {
+    bgm: HashMap<CString, CString>,
+}
+
+impl ModConfig {
+    fn validate(&self) {
+        fn cstr2str_or_msgbox_and_panic(cstr: &CString) -> String {
+            cstr.to_str()
+                .inspect_err(|e| unsafe {
+                    MessageBoxA(
+                        null_mut(),
+                        format!("{}\0", e).as_ptr(),
+                        "CStr Error\0".as_ptr(),
+                        MB_OK,
+                    );
+                })
+                .unwrap()
+                .to_owned()
+        }
+
+        fn path_error(path: String) {
+            unsafe {
+                MessageBoxA(
+                    null_mut(),
+                    format!("Source BGM \"{}\" not found\0", path).as_ptr(),
+                    "Error\0".as_ptr(),
+                    MB_OK,
+                );
+            }
+        }
+
+        for (k, v) in self.bgm.iter() {
+            let k = cstr2str_or_msgbox_and_panic(k);
+            let kmet = fs::metadata(&k);
+            if let Err(_) = kmet {
+                path_error(k);
+            }
+
+            let v = cstr2str_or_msgbox_and_panic(v);
+            let vmet = fs::metadata(&v);
+            if let Err(_) = vmet {
+                path_error(v);
+            }
+        }
+    }
+}
+
+static CONFIG: LazyLock<ModConfig> = LazyLock::new(|| {
+    let contents = fs::read("modconfig.toml").expect("Unable to read modconfig.toml!");
+
+    let config: ModConfig = toml::from_slice(&contents).unwrap();
+    config
+});
+
 fn apply_patches(lock: modloader::InitPhaseOnly) {
     unsafe {
         Patch::<f64> {
@@ -223,6 +287,7 @@ fn apply_patches(lock: modloader::InitPhaseOnly) {
         .apply(&lock)
         .expect("Failed to patch FPS");
     };
+
     #[repr(transparent)]
     struct BgmFileName([u8; 22]);
     impl TryFrom<&str> for BgmFileName {
@@ -257,7 +322,39 @@ fn apply_patches(lock: modloader::InitPhaseOnly) {
         .apply(&lock)
         .expect("Failed to patch Title Screen BGM");
     }
+
+    BGM_HOOK
+        .try_insert({
+            let target = unsafe { Patch::get_addr(0x7bc80) }.unwrap();
+            let detour = unsafe { std::mem::transmute(play_bgm as PlayBGMFn) };
+            unsafe { RawDetour::new(target, detour).unwrap() }
+        })
+        .unwrap();
+    unsafe { BGM_HOOK.get().unwrap().enable().unwrap() };
 }
+
+type PlayBGMFn = unsafe extern "system" fn(*mut c_void, *const c_char, u64, u64) -> u64;
+
+unsafe extern "system" fn play_bgm(
+    game_state: *mut c_void,
+    path: *const i8,
+    a2: u64,
+    a3: u64,
+) -> u64 {
+    unsafe {
+        MessageBoxA(null_mut(), path.cast(), "".as_ptr(), MB_OK);
+    }
+
+    let bgms = &CONFIG.bgm;
+
+    let path = unsafe { CStr::from_ptr(path) }.to_owned();
+    let new_path = bgms.get(&path).unwrap_or(&path);
+
+    let og: PlayBGMFn = unsafe { std::mem::transmute(BGM_HOOK.get().unwrap().trampoline()) };
+    unsafe { og(game_state, new_path.as_ptr(), a2, a3) }
+}
+
+static BGM_HOOK: OnceLock<RawDetour> = OnceLock::new();
 
 fn main(window: HWND) -> ! {
     log::set_logger(&*LOGGER).unwrap();
@@ -325,12 +422,17 @@ enum PatchError {
 }
 
 impl<T: Sized> Patch<T> {
-    unsafe fn apply(self, _lock: &modloader::InitPhaseOnly) -> Result<T, PatchError> {
+    unsafe fn get_addr(offset: usize) -> Option<*mut T> {
         let main = unsafe { GetModuleHandleA(null()) };
         if main.is_null() {
-            return Err(PatchError::GetModuleHandle);
+            return None;
         }
-        let addr: *mut T = unsafe { main.byte_add(self.addr) }.cast();
+        let addr: *mut T = unsafe { main.byte_add(offset) }.cast();
+        Some(addr)
+    }
+
+    unsafe fn apply(self, _lock: &modloader::InitPhaseOnly) -> Result<T, PatchError> {
+        let addr = unsafe { Self::get_addr(self.addr).ok_or(PatchError::GetModuleHandle) }?;
 
         let oldvalue = unsafe { addr.read() };
 
